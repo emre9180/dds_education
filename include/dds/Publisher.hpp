@@ -6,9 +6,15 @@
 #include "dds/Topic.hpp"
 #include "dds/Transport.hpp"
 #include "dds/Message.hpp"
+#include "dds/AnyTopic.hpp"
+#include "dds/AnyMessage.hpp"
 
 namespace dds {
 
+/**
+ * @brief Publisher for a specific Topic and message type.
+ * Publishes messages by delegating to the Transport layer (type-erased).
+ */
 template<typename T>
 class Publisher {
 public:
@@ -17,13 +23,22 @@ public:
 
     virtual ~Publisher() = default;
 
+    /**
+     * @brief Publish a message to the topic via the Transport (type-erased).
+     * @param msg The message to publish
+     */
     void publish(const Message<T>& msg) {
         if (transport_ && topic_) {
-            transport_->send(*topic_, msg);
+            transport_->send(AnyTopic(*topic_), AnyMessage(msg));
         }
     }
 
 protected:
+    /**
+     * @brief Protected constructor, only accessible by DomainParticipant.
+     * @param topic The topic to publish to
+     * @param transport The transport to use
+     */
     Publisher(const TopicPtr& topic, const TransportPtr& transport)
         : topic_(topic), transport_(transport) {}
 

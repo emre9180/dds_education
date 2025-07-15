@@ -1,4 +1,4 @@
-file(GLOB EXAMPLES "example_*.cpp")
+file(GLOB EXAMPLES "*.cpp")
 foreach(example_src ${EXAMPLES})
     get_filename_component(example_name ${example_src} NAME_WE)
     add_executable(${example_name} ${example_src})

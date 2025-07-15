@@ -65,12 +65,16 @@ protected:
     \item \textbf{Transport Delegation:} The \texttt{publish()} method delegates the actual message delivery to the transport layer, decoupling the publisher from the communication mechanism.
 \end{itemize}
 
-\subsection{Member Functions}
-\paragraph{\texttt{publish(const Message<T>\& msg)}}
-Publishes a message to the associated topic using the configured transport. The function checks that both the transport and topic are valid before delegating to \texttt{transport\_->send(*topic\_, msg)}.
-
-\paragraph{\texttt{Publisher(const TopicPtr\&, const TransportPtr\&)}}
-Constructs a publisher with the given topic and transport. This is only accessible by \texttt{DomainParticipant} due to the friend declaration.
+\subsection{Implementation Details}
+The \texttt{Publisher} class is implemented as a template with a protected constructor, ensuring that only \texttt{DomainParticipant} can create instances. The \texttt{publish()} method checks that both the transport and topic are valid, then delegates message delivery to the transport layer:
+\begin{lstlisting}[language=C++]
+void publish(const Message<T>& msg) {
+    if (transport_ && topic_) {
+        transport_->send(*topic_, msg);
+    }
+}
+\end{lstlisting}
+The use of smart pointers ensures safe resource management. The \texttt{friend class DomainParticipant;} declaration allows only the participant to construct publishers, enforcing the factory pattern and dependency injection.
 
 \subsection{Thread Safety}
 The \texttt{Publisher} class itself is not inherently thread-safe. If multiple threads may call \texttt{publish()} concurrently, external synchronization (e.g., mutexes) should be used, or the transport implementation must guarantee thread safety.
@@ -156,12 +160,17 @@ protected:
     \item \textbf{Protected Constructor:} The constructor is protected to enforce the use of the factory method in \texttt{DomainParticipant}, ensuring consistent initialization and dependency injection.
 \end{itemize}
 
-\subsection{Member Functions}
-\paragraph{\texttt{set\_callback(Callback cb)}}
-Registers a callback function to be invoked when a new message is received for the associated topic. The callback is also registered with the transport layer, which is responsible for invoking it upon message arrival.
-
-\paragraph{\texttt{Subscriber(const TopicPtr\&, const TransportPtr\&)}}
-Constructs a subscriber with the given topic and transport. This is only accessible by \texttt{DomainParticipant} due to the friend declaration.
+\subsection{Implementation Details}
+The \texttt{Subscriber} class is implemented as a template with a protected constructor, ensuring that only \texttt{DomainParticipant} can create instances. The \texttt{set\_callback()} method stores the callback and registers it with the transport layer:
+\begin{lstlisting}[language=C++]
+void set_callback(Callback cb) {
+    callback_ = cb;
+    if (transport_ && topic_) {
+        transport_->set_receive_callback(*topic_, cb);
+    }
+}
+\end{lstlisting}
+Smart pointers are used for safe resource management. The \texttt{friend class DomainParticipant;} declaration enforces the factory pattern and proper dependency injection.
 
 \subsection{Thread Safety and Asynchronous Operation}
 The \texttt{Subscriber} class itself is not inherently thread-safe. If multiple threads may call \texttt{set\_callback()} concurrently, external synchronization should be used. The actual message delivery is typically handled asynchronously by the transport layer, which may use its own threads or event loops to invoke the callback. This design enables event-driven and reactive programming models.
@@ -465,6 +474,28 @@ Creates a publisher for the specified topic and message type, injecting the shar
 \paragraph{\texttt{template<typename T> std::shared\_ptr<Subscriber<T>> create\_subscriber(const std::shared\_ptr<Topic<T>>\& topic)}}
 Creates a subscriber for the specified topic and message type, injecting the shared transport.
 
+\subsection{Implementation Details and Advanced C++ Notes}
+\textbf{Protected Constructors and Smart Pointers:}
+
+In C++, if a class has a protected constructor (as is the case for \texttt{Publisher} and \texttt{Subscriber}), \texttt{std::make_shared} cannot be used to construct instances, because \texttt{make_shared} is not a friend and cannot access protected/private constructors. Instead, you must use direct \texttt{new}:
+\begin{lstlisting}[language=C++]
+// Correct way to construct with protected constructor:
+return std::shared_ptr<Publisher<T>>(new Publisher<T>(topic, transport_));
+return std::shared_ptr<Subscriber<T>>(new Subscriber<T>(topic, transport_));
+\end{lstlisting}
+This ensures that only \texttt{DomainParticipant} (as a friend) can construct these objects, enforcing the factory pattern and encapsulation.
+
+\textbf{Template Method Implementations in Header:}
+
+C++ requires that template method implementations be available in every translation unit that uses them. Therefore, all template methods (such as \texttt{create\_publisher} and \texttt{create\_subscriber}) must be implemented in the header file, not in a \texttt{.cpp} file. Otherwise, you will get linker errors for missing symbols.
+
+\textbf{Summary:}
+\begin{itemize}
+    \item Use direct \texttt{new} with \texttt{std::shared_ptr} for protected constructors.
+    \item Keep all template method implementations in the header.
+    \item This approach is standard and necessary for modern C++ template-based factory patterns.
+\end{itemize}
+
 \subsection{Usage Example}
 \begin{lstlisting}[language=C++]
 #include <dds/DomainParticipant.hpp>
@@ -503,7 +534,7 @@ Injecting the transport layer at the participant level promotes loose coupling, 
 \paragraph{Extensibility and Domain Management}
 The participant can be extended to manage additional domain-level features, such as topic discovery, QoS negotiation, or security policies, making it a flexible foundation for advanced DDS systems.
 
-\section{Transport and MockTransport (\texttt{Transport.hpp})}
+\section{Transport and MockTransport (\texttt{Transport.hpp}, \texttt{MockTransport.hpp})}
 
 \subsection{Purpose and Overview}
 The \texttt{Transport} class provides an abstract interface for message delivery in the DDS system. It decouples publishers and subscribers from the underlying communication mechanism, enabling support for various transports such as TCP, UDP, shared memory, or mock/test transports. The \texttt{MockTransport} class is a concrete implementation used for testing and in-process message delivery, simulating network behavior without actual I/O.
@@ -546,12 +577,64 @@ public:
     \item \textbf{MockTransport:} The mock implementation enables in-process testing, simulating message delivery and callback invocation without real network I/O.
 \end{itemize}
 
-\subsection{Member Functions}
-\paragraph{\texttt{template<typename T> void send(const Topic<T>\& topic, const Message<T>\& msg)}}
-Sends a message to the specified topic. In \texttt{MockTransport}, this immediately invokes the registered callback for the topic, if any.
+\subsection{Type-Erased Transport Interface}
+The \texttt{Transport} interface now uses type-erasure for all message delivery and callback registration. Instead of template virtual methods, it provides:
+\begin{lstlisting}[language=C++]
+virtual void send(const AnyTopic\& topic, const AnyMessage\& msg) = 0;
+virtual void set_receive_callback(const AnyTopic\& topic, std::function<void(const AnyMessage\&)>&& cb) = 0;
+\end{lstlisting}
+This enables runtime polymorphism and allows the transport to handle messages and topics of any type.
 
-\paragraph{\texttt{template<typename T> void set\_receive\_callback(const Topic<T>\& topic, ReceiveCallback<T> cb)}}
-Registers a callback to be invoked when a message is received for the specified topic. In \texttt{MockTransport}, this stores the callback in an internal registry.
+\subsection{MockTransport Implementation}
+\texttt{MockTransport} overrides the type-erased interface and provides template convenience methods for type safety:
+\begin{lstlisting}[language=C++]
+void send(const AnyTopic\& topic, const AnyMessage\& msg) override;
+void set_receive_callback(const AnyTopic\& topic, std::function<void(const AnyMessage\&)>&& cb) override;
+
+template<typename T>
+void send(const Topic<T>& topic, const Message<T>& msg) {
+    send(AnyTopic(topic), AnyMessage(msg));
+}
+
+template<typename T>
+void set_receive_callback(const Topic<T>& topic, std::function<void(const Message<T>&)> cb) {
+    set_receive_callback(
+        AnyTopic(topic),
+        [cb, type = typeid(Message<T>)](const AnyMessage& any_msg) {
+            if (any_msg.type() == type) {
+                cb(any_msg.get<T>());
+            }
+        }
+    );
+}
+\end{lstlisting}
+All callbacks are stored as type-erased lambdas, and message delivery is performed by looking up the callback by topic name and invoking it with the type-erased message.
+
+\subsection{Publisher and Subscriber Changes}
+\texttt{Publisher} and \texttt{Subscriber} now use the type-erased interface:
+\begin{lstlisting}[language=C++]
+// Publisher
+void publish(const Message<T>& msg) {
+    if (transport_ && topic_) {
+        transport_->send(AnyTopic(*topic_), AnyMessage(msg));
+    }
+}
+// Subscriber
+void set_callback(Callback cb) {
+    callback_ = cb;
+    if (transport_ && topic_) {
+        transport_->set_receive_callback(
+            AnyTopic(*topic_),
+            [cb, type = typeid(Message<T>)](const AnyMessage& any_msg) {
+                if (any_msg.type() == type) {
+                    cb(any_msg.get<T>());
+                }
+            }
+        );
+    }
+}
+\end{lstlisting}
+This ensures that all message delivery and callback registration is type-safe and runtime-polymorphic, while still allowing template convenience for user code.
 
 \subsection{Usage Example}
 \begin{lstlisting}[language=C++]
@@ -922,7 +1005,85 @@ t1.join(); t2.join();
 % \end{center}
 
 \chapter{Usage Examples}
-% Add code listings and best practices
+
+\section{Basic Publish/Subscribe Example}
+The following example demonstrates how to set up a simple publish/subscribe flow using the mini-DDS library. It shows how to create a domain participant, set up a mock transport, define a topic and message type, and connect a publisher and subscriber.
+
+\subsection{Example Code: pubsub\_basic.cpp}
+\begin{lstlisting}[language=C++]
+#include <dds/DomainParticipant.hpp>
+#include <dds/MockTransport.hpp>
+#include <dds/Publisher.hpp>
+#include <dds/Subscriber.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Message.hpp>
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+struct MyData {
+    int value;
+};
+
+int main() {
+    using namespace dds;
+
+    // Create a shared MockTransport
+    auto transport = std::make_shared<MockTransport>();
+
+    // Create a DomainParticipant with the transport
+    DomainParticipant participant(transport);
+
+    // Create a Topic for MyData
+    auto topic = std::make_shared<Topic<MyData>>("my_topic");
+
+    // Create a Publisher and Subscriber for the topic
+    auto publisher = participant.create_publisher<MyData>(topic);
+    auto subscriber = participant.create_subscriber<MyData>(topic);
+
+    // Register a callback for the subscriber
+    subscriber->set_callback([](const Message<MyData>& msg) {
+        std::cout << "[Subscriber] Received value: " << msg.data.value << std::endl;
+        std::cout << "[Subscriber] Topic: " << msg.topic << std::endl;
+        std::cout << "[Subscriber] Sequence: " << msg.sequence_number << std::endl;
+    });
+
+    // Prepare a message
+    Message<MyData> msg;
+    msg.data.value = 42;
+    msg.topic = "my_topic";
+    msg.timestamp = std::chrono::system_clock::now();
+    msg.sequence_number = 1;
+
+    // Publish the message
+    std::cout << "[Publisher] Publishing value: " << msg.data.value << std::endl;
+    publisher->publish(msg);
+
+    // Give time for the callback to execute (not needed for MockTransport, but good practice)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{Explanation}
+\begin{itemize}
+    \item \textbf{DomainParticipant:} Manages the DDS domain and acts as a factory for publishers and subscribers.
+    \item \textbf{MockTransport:} Provides in-process message delivery for testing and development.
+    \item \textbf{Topic:} Defines a named channel for messages of type \texttt{MyData}.
+    \item \textbf{Publisher:} Publishes messages to the topic via the transport.
+    \item \textbf{Subscriber:} Registers a callback to receive messages from the topic.
+    \item \textbf{Message:} Encapsulates the data payload and metadata (topic, timestamp, sequence number).
+    \item \textbf{Flow:} The publisher sends a message, which is immediately delivered to the subscriber's callback by the mock transport.
+\end{itemize}
+
+\subsection{Expected Output}
+\begin{lstlisting}
+[Publisher] Publishing value: 42
+[Subscriber] Received value: 42
+[Subscriber] Topic: my_topic
+[Subscriber] Sequence: 1
+\end{lstlisting}
 
 \chapter{Development Roadmap}
 % Add completed and planned features
