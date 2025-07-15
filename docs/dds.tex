@@ -1,0 +1,934 @@
+\documentclass[12pt]{report}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\geometry{margin=1in}
+\title{Mini DDS Library Documentation}
+\author{DDS Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\chapter{Introduction}
+Mini-DDS is an educational, modern C++ Data Distribution Service library designed to teach advanced concurrency, communication, and system-level programming concepts. This documentation provides an in-depth explanation of the architecture, API, and implementation details, with a focus on modern C++ techniques such as templates, type-erasure, smart pointers, and more.
+
+\chapter{Architecture Overview}
+\section{Modules and Relationships}
+% Add a class diagram here (TikZ or external image)
+
+\section{Design Principles}
+- Separation of concerns
+- Extensibility
+- Type safety and runtime polymorphism
+- Testability and mockability
+
+\chapter{Class Diagram}
+% Example TikZ diagram or placeholder
+
+\chapter{API Reference}
+
+\section{Publisher (\texttt{Publisher.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Publisher} class template is responsible for publishing messages of a specific type to a given topic within the DDS system. It is designed to be type-safe, extensible, and to delegate the actual message delivery to a transport layer, abstracting away the underlying communication mechanism (e.g., TCP, UDP, or a mock transport for testing).
+
+\subsection{Class Template Declaration}
+\begin{lstlisting}[language=C++]
+template<typename T>
+class Publisher {
+public:
+    using TopicPtr = std::shared_ptr<Topic<T>>;
+    using TransportPtr = std::shared_ptr<Transport>;
+
+    virtual ~Publisher() = default;
+
+    void publish(const Message<T>& msg);
+
+protected:
+    Publisher(const TopicPtr& topic, const TransportPtr& transport);
+    TopicPtr topic_;
+    TransportPtr transport_;
+    friend class DomainParticipant;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Template Parameter \texttt{T}:} Ensures compile-time type safety for published messages. Each publisher instance is bound to a specific message type.
+    \item \textbf{Smart Pointers:} \texttt{std::shared\_ptr} is used for both the topic and transport to manage shared ownership and avoid manual memory management. This is crucial in concurrent systems to prevent dangling pointers and memory leaks.
+    \item \textbf{Protected Constructor:} The constructor is protected to enforce the use of the factory method in \texttt{DomainParticipant}, ensuring consistent initialization and dependency injection.
+    \item \textbf{Transport Delegation:} The \texttt{publish()} method delegates the actual message delivery to the transport layer, decoupling the publisher from the communication mechanism.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{publish(const Message<T>\& msg)}}
+Publishes a message to the associated topic using the configured transport. The function checks that both the transport and topic are valid before delegating to \texttt{transport\_->send(*topic\_, msg)}.
+
+\paragraph{\texttt{Publisher(const TopicPtr\&, const TransportPtr\&)}}
+Constructs a publisher with the given topic and transport. This is only accessible by \texttt{DomainParticipant} due to the friend declaration.
+
+\subsection{Thread Safety}
+The \texttt{Publisher} class itself is not inherently thread-safe. If multiple threads may call \texttt{publish()} concurrently, external synchronization (e.g., mutexes) should be used, or the transport implementation must guarantee thread safety.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/DomainParticipant.hpp>
+#include <dds/Publisher.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Message.hpp>
+#include <dds/Transport.hpp>
+
+struct MyData { int value; };
+
+auto transport = std::make_shared<dds::MockTransport>();
+dds::DomainParticipant participant(transport);
+auto topic = std::make_shared<dds::Topic<MyData>>("my_topic");
+auto publisher = participant.create_publisher<MyData>(topic);
+
+dds::Message<MyData> msg;
+msg.data.value = 42;
+msg.topic = "my_topic";
+msg.timestamp = std::chrono::system_clock::now();
+msg.sequence_number = 1;
+
+publisher->publish(msg);
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Null Transport or Topic:} If either the transport or topic is null, \texttt{publish()} will do nothing. Always ensure valid dependencies.
+    \item \textbf{Ownership:} Use \texttt{std::shared\_ptr} for shared ownership. If unique ownership is required, consider \texttt{std::unique\_ptr} with appropriate API changes.
+    \item \textbf{Extensibility:} The design allows for custom transports (e.g., TCP, UDP, Mock) to be injected without modifying the publisher logic.
+    \item \textbf{Performance:} For high-frequency publishing, consider batching or lock-free queues in the transport layer.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Templates}
+Templates provide compile-time type safety and eliminate the need for dynamic casting. Each publisher is bound to a specific message type, preventing accidental type mismatches.
+
+\paragraph{Smart Pointers}
+\texttt{std::shared\_ptr} is used to manage the lifetime of shared resources. This is especially important in concurrent systems where multiple entities may reference the same topic or transport.
+
+\paragraph{Type-Erasure and Polymorphism}
+While \texttt{Publisher} is templated, it can be used alongside type-erased constructs (e.g., \texttt{AnyMessage}) for generic APIs or logging. This hybrid approach combines the safety of templates with the flexibility of runtime polymorphism.
+
+\paragraph{Friendship and Encapsulation}
+The use of \texttt{friend class DomainParticipant;} restricts direct instantiation, enforcing the factory pattern and ensuring proper dependency injection.
+
+\section{Subscriber (\texttt{Subscriber.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Subscriber} class template is responsible for receiving messages of a specific type from a given topic within the DDS system. It is designed to be type-safe, extensible, and to delegate the actual message reception and delivery to a transport layer. The subscriber registers a callback function to be invoked when a new message arrives, supporting both synchronous and asynchronous/event-driven designs.
+
+\subsection{Class Template Declaration}
+\begin{lstlisting}[language=C++]
+template<typename T>
+class Subscriber {
+public:
+    using TopicPtr = std::shared_ptr<Topic<T>>;
+    using TransportPtr = std::shared_ptr<Transport>;
+    using Callback = std::function<void(const Message<T>&)>;
+
+    virtual ~Subscriber() = default;
+
+    void set_callback(Callback cb);
+
+protected:
+    Subscriber(const TopicPtr& topic, const TransportPtr& transport);
+    TopicPtr topic_;
+    TransportPtr transport_;
+    Callback callback_;
+    friend class DomainParticipant;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Template Parameter \texttt{T}:} Ensures compile-time type safety for received messages. Each subscriber instance is bound to a specific message type.
+    \item \textbf{Smart Pointers:} \texttt{std::shared\_ptr} is used for both the topic and transport to manage shared ownership and avoid manual memory management.
+    \item \textbf{Callback Mechanism:} The subscriber uses a \texttt{std::function} callback to allow flexible message handling, including lambdas, function pointers, or functors.
+    \item \textbf{Transport Delegation:} The \texttt{set\_callback()} method registers the callback with the transport layer, decoupling the subscriber from the communication mechanism.
+    \item \textbf{Protected Constructor:} The constructor is protected to enforce the use of the factory method in \texttt{DomainParticipant}, ensuring consistent initialization and dependency injection.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{set\_callback(Callback cb)}}
+Registers a callback function to be invoked when a new message is received for the associated topic. The callback is also registered with the transport layer, which is responsible for invoking it upon message arrival.
+
+\paragraph{\texttt{Subscriber(const TopicPtr\&, const TransportPtr\&)}}
+Constructs a subscriber with the given topic and transport. This is only accessible by \texttt{DomainParticipant} due to the friend declaration.
+
+\subsection{Thread Safety and Asynchronous Operation}
+The \texttt{Subscriber} class itself is not inherently thread-safe. If multiple threads may call \texttt{set\_callback()} concurrently, external synchronization should be used. The actual message delivery is typically handled asynchronously by the transport layer, which may use its own threads or event loops to invoke the callback. This design enables event-driven and reactive programming models.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/DomainParticipant.hpp>
+#include <dds/Subscriber.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Message.hpp>
+#include <dds/Transport.hpp>
+
+struct MyData { int value; };
+
+auto transport = std::make_shared<dds::MockTransport>();
+dds::DomainParticipant participant(transport);
+auto topic = std::make_shared<dds::Topic<MyData>>("my_topic");
+auto subscriber = participant.create_subscriber<MyData>(topic);
+
+subscriber->set_callback([](const dds::Message<MyData>& msg) {
+    std::cout << "Received value: " << msg.data.value << std::endl;
+});
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Null Transport or Topic:} If either the transport or topic is null, \texttt{set\_callback()} will not register the callback. Always ensure valid dependencies.
+    \item \textbf{Callback Lifetime:} Ensure that any resources captured by the callback (e.g., via lambda capture) outlive the subscriber or are managed safely to avoid dangling references.
+    \item \textbf{Reentrancy:} If the callback modifies shared state, use appropriate synchronization (e.g., mutexes) to avoid data races.
+    \item \textbf{Multiple Callbacks:} The current design supports a single callback per subscriber. For multiple listeners, consider a callback registry or observer pattern.
+    \item \textbf{Performance:} For high-frequency message delivery, consider lock-free queues or thread pools in the transport layer.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Templates}
+Templates provide compile-time type safety and eliminate the need for dynamic casting. Each subscriber is bound to a specific message type, preventing accidental type mismatches.
+
+\paragraph{Smart Pointers}
+\texttt{std::shared\_ptr} is used to manage the lifetime of shared resources. This is especially important in concurrent systems where multiple entities may reference the same topic or transport.
+
+\paragraph{Callback Registration and std::function}
+The use of \texttt{std::function} allows for flexible callback registration, supporting lambdas, function pointers, and functors. This enables a wide range of message handling strategies, including capturing local state or integrating with event loops.
+
+\paragraph{Asynchronous/Event-Driven Design}
+The subscriber is designed to work with asynchronous transport layers. The callback may be invoked from a different thread or event loop, enabling reactive and event-driven programming models.
+
+\paragraph{Friendship and Encapsulation}
+The use of \texttt{friend class DomainParticipant;} restricts direct instantiation, enforcing the factory pattern and ensuring proper dependency injection.
+
+\section{Topic (\texttt{Topic.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Topic} class template represents a named channel for message exchange in the DDS system. Each topic is associated with a specific message type, ensuring type safety and clear separation of communication channels. Topics are used to bind publishers and subscribers together, allowing only compatible message types to be exchanged.
+
+\subsection{Class Template Declaration}
+\begin{lstlisting}[language=C++]
+template<typename T>
+class Topic {
+public:
+    Topic(const std::string& name);
+    virtual ~Topic() = default;
+
+    const std::string& name() const;
+    const std::type_info& type() const;
+
+private:
+    std::string name_;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Template Parameter \texttt{T}:} Binds the topic to a specific message type, ensuring compile-time type safety for all publishers and subscribers associated with the topic.
+    \item \textbf{Name and Type Information:} Each topic has a unique name and exposes its message type via \texttt{typeid(T)}. This allows for runtime type inspection and dynamic discovery mechanisms.
+    \item \textbf{Smart Pointer Usage:} Topics are typically managed using \texttt{std::shared\_ptr} to allow shared ownership between publishers, subscribers, and registries.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{Topic(const std::string\& name)}}
+Constructs a topic with the given name. The name should be unique within the DDS domain.
+
+\paragraph{\texttt{const std::string\& name() const}}
+Returns the name of the topic. This is used to identify the topic in registries, transport layers, and for logging or debugging.
+
+\paragraph{\texttt{const std::type\_info\& type() const}}
+Returns the type information for the topic's message type. This is useful for runtime type inspection, type-erasure mechanisms, and generic registries.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/Topic.hpp>
+
+struct MyData { int value; };
+
+auto topic = std::make_shared<dds::Topic<MyData>>("my_topic");
+std::cout << "Topic name: " << topic->name() << std::endl;
+std::cout << "Topic type: " << topic->type().name() << std::endl;
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Unique Names:} Ensure that topic names are unique within the DDS domain to avoid message routing conflicts.
+    \item \textbf{Type Mismatches:} Attempting to use a topic with a mismatched message type (e.g., subscribing with a different type than the publisher) will result in compile-time errors due to template enforcement.
+    \item \textbf{Type Information:} The \texttt{type()} method returns a reference to a \texttt{std::type\_info} object, which can be compared using \texttt{==} or \texttt{!=} for type-safe runtime checks.
+    \item \textbf{Ownership:} Use \texttt{std::shared\_ptr} for topics shared between multiple publishers and subscribers. For unique ownership, consider \texttt{std::unique\_ptr}.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Templates and Type Safety}
+Templates ensure that only compatible message types are published and subscribed on a given topic, preventing accidental type mismatches at compile time.
+
+\paragraph{Runtime Type Information (RTTI)}
+The \texttt{type()} method exposes the message type using \texttt{typeid(T)}, which returns a reference to a \texttt{std::type\_info} object. This enables runtime type inspection, dynamic discovery, and integration with type-erasure mechanisms (e.g., \texttt{AnyTopic}).
+
+\paragraph{Type-Erasure Integration}
+Topics can be wrapped in type-erased containers (e.g., \texttt{AnyTopic}) for use in generic registries, logging, or dynamic discovery systems. The combination of compile-time and runtime type information provides both safety and flexibility.
+
+\section{Message (\texttt{Message.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Message} struct template encapsulates the data payload and associated metadata for messages exchanged in the DDS system. It is designed to be type-safe, extensible, and to carry essential information such as the topic name, Quality of Service (QoS) policies, timestamp, and a sequence number. This design enables advanced features like message ordering, delivery guarantees, and time-based filtering.
+
+\subsection{Struct Template Declaration}
+\begin{lstlisting}[language=C++]
+template<typename T>
+struct Message {
+    T data;
+    std::string topic;
+    QoS qos;
+    std::chrono::system_clock::time_point timestamp;
+    uint64_t sequence_number = 0;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Template Parameter \texttt{T}:} Binds the message to a specific data type, ensuring compile-time type safety for all message exchanges.
+    \item \textbf{Data Payload:} The \texttt{data} member holds the actual user-defined content of the message.
+    \item \textbf{Topic Name:} The \texttt{topic} member records the name of the topic to which the message belongs, enabling routing and filtering.
+    \item \textbf{QoS Policies:} The \texttt{qos} member allows for the specification of delivery guarantees, reliability, and other quality-of-service parameters.
+    \item \textbf{Timestamp:} The \texttt{timestamp} member records the time at which the message was created or sent, enabling time-based filtering and ordering.
+    \item \textbf{Sequence Number:} The \texttt{sequence\_number} member provides a unique identifier for the message within a topic, supporting ordering and deduplication.
+\end{itemize}
+
+\subsection{Member Fields}
+\paragraph{\texttt{T data}}
+The user-defined payload of the message. This can be any type, including structs, classes, or primitive types.
+
+\paragraph{\texttt{std::string topic}}
+The name of the topic to which the message belongs. This is used for routing and filtering in the transport and middleware layers.
+
+\paragraph{\texttt{QoS qos}}
+The Quality of Service policies associated with the message. This struct can be extended to include reliability, durability, deadline, and other DDS QoS parameters.
+
+\paragraph{\texttt{std::chrono::system\_clock::time\_point timestamp}}
+The timestamp indicating when the message was created or sent. This uses the C++ standard library's \texttt{chrono} facilities for high-resolution, type-safe time representation.
+
+\paragraph{\texttt{uint64\_t sequence\_number}}
+A monotonically increasing sequence number for the message within its topic. This supports message ordering, deduplication, and replay.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/Message.hpp>
+#include <chrono>
+
+struct MyData { int value; };
+
+dds::Message<MyData> msg;
+msg.data.value = 42;
+msg.topic = "my_topic";
+msg.qos = dds::QoS{/* ... */};
+msg.timestamp = std::chrono::system_clock::now();
+msg.sequence_number = 1;
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Default Initialization:} Always initialize all fields, especially \texttt{timestamp} and \texttt{sequence\_number}, to ensure correct message ordering and time-based operations.
+    \item \textbf{QoS Extension:} The \texttt{QoS} struct is designed to be extensible. Add fields as needed for your application (e.g., reliability, deadline, priority).
+    \item \textbf{Topic Consistency:} Ensure that the \texttt{topic} field matches the topic used by the publisher and subscriber to avoid routing errors.
+    \item \textbf{Copy and Move Semantics:} The struct supports default copy and move operations. For large payloads, consider using smart pointers or move semantics for efficiency.
+    \item \textbf{Chrono Usage:} Use \texttt{std::chrono} for all time-related fields to ensure type safety and avoid unit mismatches.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Templates and Type Safety}
+Templates ensure that only compatible message types are exchanged, preventing accidental type mismatches at compile time.
+
+\paragraph{Chrono and Time Representation}
+The use of \texttt{std::chrono::system\_clock::time\_point} provides a high-resolution, type-safe way to represent timestamps, supporting advanced time-based filtering and ordering.
+
+\paragraph{Struct Layout and Performance}
+The \texttt{Message} struct is a Plain Old Data (POD) type, enabling efficient copying, moving, and serialization. For large or complex payloads, consider using smart pointers or custom allocators.
+
+\paragraph{Type-Erasure Integration}
+Messages can be wrapped in type-erased containers (e.g., \texttt{AnyMessage}) for use in generic queues, logging, or dynamic dispatch systems. The combination of compile-time and runtime type information provides both safety and flexibility.
+
+\section{Types (\texttt{Types.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Types.hpp} header provides common type definitions and policy structures used throughout the DDS system. It centralizes shared types such as topic names and Quality of Service (QoS) policies, promoting consistency, extensibility, and maintainability across the codebase.
+
+\subsection{Type Definitions and Structures}
+\begin{lstlisting}[language=C++]
+using TopicName = std::string;
+
+struct QoS {
+    // Add QoS policy fields here (e.g., reliability, durability)
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Type Aliases:} The \texttt{TopicName} alias provides semantic clarity, making it explicit when a string is used as a topic name rather than arbitrary text.
+    \item \textbf{QoS Policy Struct:} The \texttt{QoS} struct is designed to be extensible, allowing the addition of fields for reliability, durability, deadline, priority, and other DDS-specific policies as needed.
+    \item \textbf{Centralization:} By defining common types in a single header, the codebase remains consistent and easier to refactor or extend.
+\end{itemize}
+
+\subsection{Member Types}
+\paragraph{\texttt{using TopicName = std::string;}}
+A type alias for topic names. This improves code readability and allows for future changes (e.g., switching to a different string type or adding validation) without widespread refactoring.
+
+\paragraph{\texttt{struct QoS}}
+A placeholder for Quality of Service policies. Extend this struct to include fields such as:
+\begin{itemize}
+    \item \texttt{bool reliable;} -- Whether reliable delivery is required
+    \item \texttt{int priority;} -- Message priority for scheduling
+    \item \texttt{std::chrono::milliseconds deadline;} -- Maximum acceptable delivery delay
+    \item \texttt{bool durable;} -- Whether messages should be persisted
+\end{itemize}
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/Types.hpp>
+
+dds::TopicName name = "my_topic";
+dds::QoS qos;
+qos.reliable = true;
+qos.priority = 10;
+qos.deadline = std::chrono::milliseconds(100);
+qos.durable = false;
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Extensibility:} Always design policy structs like \texttt{QoS} to be forward-compatible. Use default values and document each field's semantics.
+    \item \textbf{Type Aliases:} Prefer type aliases for semantically meaningful types. This improves code clarity and future-proofs the codebase.
+    \item \textbf{Validation:} If topic names or QoS fields require validation, encapsulate logic in helper functions or class methods.
+    \item \textbf{Policy-Based Design:} Consider using policy-based design patterns, where behaviors (e.g., reliability, durability) are implemented as separate policy classes or traits and composed via templates.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Struct Design and Extensibility}
+Design structs like \texttt{QoS} to be open for extension but closed for modification (Open/Closed Principle). Use default member initializers and document intended usage.
+
+\paragraph{Policy-Based Design}
+For advanced users, consider policy-based design patterns, where behaviors (e.g., reliability, durability) are implemented as separate policy classes or traits and composed via templates.
+
+\paragraph{Type Aliases and Semantic Clarity}
+Type aliases (\texttt{using}) improve code readability and maintainability, making it clear when a value represents a specific concept (e.g., a topic name) rather than a generic type.
+
+\section{DomainParticipant (\texttt{DomainParticipant.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{DomainParticipant} class acts as the central entry point for interacting with the DDS system. It is responsible for managing the domain context, providing factory methods to create publishers and subscribers, and injecting shared dependencies such as the transport layer. This design enforces consistent initialization, encapsulation, and dependency management across the system.
+
+\subsection{Class Declaration}
+\begin{lstlisting}[language=C++]
+class DomainParticipant {
+public:
+    using TransportPtr = std::shared_ptr<Transport>;
+
+    DomainParticipant(const TransportPtr& transport);
+    virtual ~DomainParticipant() = default;
+
+    template<typename T>
+    std::shared_ptr<Publisher<T>> create_publisher(const std::shared_ptr<Topic<T>>& topic);
+
+    template<typename T>
+    std::shared_ptr<Subscriber<T>> create_subscriber(const std::shared_ptr<Topic<T>>& topic);
+
+private:
+    TransportPtr transport_;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Factory Pattern:} By providing factory methods for publishers and subscribers, the \texttt{DomainParticipant} ensures that all entities are created with the correct dependencies and configuration.
+    \item \textbf{Dependency Injection:} The transport layer is injected into the participant and propagated to all created publishers and subscribers, promoting loose coupling and testability.
+    \item \textbf{Smart Pointers:} \texttt{std::shared\_ptr} is used for transport and created entities to manage shared ownership and avoid manual memory management.
+    \item \textbf{Encapsulation:} The participant encapsulates domain-level configuration and resources, preventing accidental misuse or inconsistent initialization.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{DomainParticipant(const TransportPtr\& transport)}}
+Constructs a participant with the given transport. The transport is shared by all publishers and subscribers created by this participant.
+
+\paragraph{\texttt{template<typename T> std::shared\_ptr<Publisher<T>> create\_publisher(const std::shared\_ptr<Topic<T>>\& topic)}}
+Creates a publisher for the specified topic and message type, injecting the shared transport.
+
+\paragraph{\texttt{template<typename T> std::shared\_ptr<Subscriber<T>> create\_subscriber(const std::shared\_ptr<Topic<T>>\& topic)}}
+Creates a subscriber for the specified topic and message type, injecting the shared transport.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/DomainParticipant.hpp>
+#include <dds/Publisher.hpp>
+#include <dds/Subscriber.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Transport.hpp>
+
+struct MyData { int value; };
+
+auto transport = std::make_shared<dds::MockTransport>();
+dds::DomainParticipant participant(transport);
+auto topic = std::make_shared<dds::Topic<MyData>>("my_topic");
+auto publisher = participant.create_publisher<MyData>(topic);
+auto subscriber = participant.create_subscriber<MyData>(topic);
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Transport Lifetime:} Ensure that the transport outlives all publishers and subscribers created by the participant to avoid dangling references.
+    \item \textbf{Multiple Participants:} Multiple participants can coexist, each with its own transport and configuration. This enables isolated domains or test environments.
+    \item \textbf{Thread Safety:} The participant itself is not inherently thread-safe. If multiple threads may create publishers or subscribers concurrently, external synchronization is required.
+    \item \textbf{Extensibility:} The participant can be extended to manage additional domain-level resources, such as topic registries, discovery services, or configuration policies.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Factory Pattern and Encapsulation}
+The use of factory methods enforces encapsulation and consistent initialization, preventing direct instantiation of publishers and subscribers with incorrect or missing dependencies.
+
+\paragraph{Dependency Injection}
+Injecting the transport layer at the participant level promotes loose coupling, testability, and the ability to swap out transport implementations (e.g., for testing or different network protocols).
+
+\paragraph{Smart Pointer Ownership}
+\texttt{std::shared\_ptr} is used to manage the lifetime of shared resources, ensuring that the transport and created entities remain valid as long as needed.
+
+\paragraph{Extensibility and Domain Management}
+The participant can be extended to manage additional domain-level features, such as topic discovery, QoS negotiation, or security policies, making it a flexible foundation for advanced DDS systems.
+
+\section{Transport and MockTransport (\texttt{Transport.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{Transport} class provides an abstract interface for message delivery in the DDS system. It decouples publishers and subscribers from the underlying communication mechanism, enabling support for various transports such as TCP, UDP, shared memory, or mock/test transports. The \texttt{MockTransport} class is a concrete implementation used for testing and in-process message delivery, simulating network behavior without actual I/O.
+
+\subsection{Class Declarations}
+\begin{lstlisting}[language=C++]
+class Transport {
+public:
+    virtual ~Transport() = default;
+
+    template<typename T>
+    using ReceiveCallback = std::function<void(const Message<T>&)>;
+
+    template<typename T>
+    virtual void send(const Topic<T>& topic, const Message<T>& msg) = 0;
+
+    template<typename T>
+    virtual void set_receive_callback(const Topic<T>& topic, ReceiveCallback<T> cb) = 0;
+};
+
+class MockTransport : public Transport {
+public:
+    MockTransport() = default;
+    ~MockTransport() override = default;
+
+    template<typename T>
+    void send(const Topic<T>& topic, const Message<T>& msg) override;
+
+    template<typename T>
+    void set_receive_callback(const Topic<T>& topic, ReceiveCallback<T> cb) override;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Abstract Interface:} The \texttt{Transport} class is a pure virtual interface, enabling multiple implementations (e.g., TCP, UDP, Mock) to be swapped in without changing publisher or subscriber logic.
+    \item \textbf{Template Methods:} Template methods allow the transport to handle messages of any type, supporting type-safe delivery and callback registration.
+    \item \textbf{Callback Registration:} Subscribers register callbacks with the transport, which invokes them when messages are received for a given topic.
+    \item \textbf{Type-Erasure:} Internally, transports may use type-erasure (e.g., \texttt{std::any}) to store callbacks for different message types in a generic registry.
+    \item \textbf{MockTransport:} The mock implementation enables in-process testing, simulating message delivery and callback invocation without real network I/O.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{template<typename T> void send(const Topic<T>\& topic, const Message<T>\& msg)}}
+Sends a message to the specified topic. In \texttt{MockTransport}, this immediately invokes the registered callback for the topic, if any.
+
+\paragraph{\texttt{template<typename T> void set\_receive\_callback(const Topic<T>\& topic, ReceiveCallback<T> cb)}}
+Registers a callback to be invoked when a message is received for the specified topic. In \texttt{MockTransport}, this stores the callback in an internal registry.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/Transport.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Message.hpp>
+
+struct MyData { int value; };
+
+dds::MockTransport transport;
+dds::Topic<MyData> topic("my_topic");
+
+dds::Message<MyData> msg;
+msg.data.value = 42;
+msg.topic = "my_topic";
+
+transport.set_receive_callback(topic, [](const dds::Message<MyData>& m) {
+    std::cout << "Received: " << m.data.value << std::endl;
+});
+
+transport.send(topic, msg); // Immediately invokes the callback
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Type Safety:} Template methods ensure that only messages of the correct type are sent and received for each topic. Type mismatches are caught at compile time.
+    \item \textbf{Callback Registry:} Internally, transports may use a map from topic name to a type-erased callback (e.g., \texttt{std::unordered\_map<std::string, std::any>}). Use \texttt{std::any\_cast} to safely retrieve the correct callback type.
+    \item \textbf{Thread Safety:} For real transports, ensure that callback registration and message delivery are thread-safe. Use mutexes or lock-free data structures as needed.
+    \item \textbf{Event Loops:} Advanced transports may use event loops, thread pools, or asynchronous I/O to deliver messages.
+    \item \textbf{Testability:} The mock transport enables unit testing of publishers and subscribers without real network dependencies.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Type-Erasure and std::any}
+To support callbacks for arbitrary message types, transports may use \texttt{std::any} to store callbacks in a generic registry. Use \texttt{std::any\_cast} to retrieve the correct callback type at runtime. Example:
+\begin{lstlisting}[language=C++]
+std::unordered_map<std::string, std::any> callbacks_;
+// Register:
+callbacks_[topic.name()] = callback;
+// Retrieve:
+auto cb = std::any_cast<ReceiveCallback<T>>(callbacks_[topic.name()]);
+\end{lstlisting}
+
+\paragraph{CRTP and Static Polymorphism}
+For advanced users, the Curiously Recurring Template Pattern (CRTP) can be used to implement static polymorphism for transports, enabling compile-time dispatch and optimization.
+
+\paragraph{Event Loops and Asynchronous Delivery}
+Real transports may use event loops, thread pools, or asynchronous I/O to deliver messages. The mock transport delivers messages synchronously for simplicity.
+
+\paragraph{Testability and Mocking}
+The mock transport enables comprehensive unit testing by simulating message delivery and callback invocation without external dependencies.
+
+\section{AnyMessage (\texttt{AnyMessage.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{AnyMessage} class provides a type-erased container for messages of arbitrary types in the DDS system. It enables runtime polymorphism, allowing messages of different types to be stored, passed, and processed generically. This is particularly useful for logging, generic queues, dynamic dispatch, and systems where the message type is not known at compile time.
+
+\subsection{Class Declaration}
+\begin{lstlisting}[language=C++]
+class AnyMessage {
+public:
+    AnyMessage() = default;
+    AnyMessage(const AnyMessage&) = default;
+    AnyMessage(AnyMessage&&) = default;
+    AnyMessage& operator=(const AnyMessage&) = default;
+    AnyMessage& operator=(AnyMessage&&) = default;
+    ~AnyMessage() = default;
+
+    template<typename T>
+    AnyMessage(const Message<T>& msg);
+
+    const std::type_info& type() const;
+
+    template<typename T>
+    const Message<T>& get() const;
+
+    bool has_value() const;
+private:
+    std::any msg_;
+    const std::type_info* type_ = nullptr;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Type-Erasure:} By storing messages as \texttt{std::any}, \texttt{AnyMessage} can hold any \texttt{Message<T>} instance, decoupling code from specific message types.
+    \item \textbf{Runtime Type Information:} The \texttt{type()} method exposes the type of the contained message, enabling safe runtime inspection and dispatch.
+    \item \textbf{Safe Access:} The \texttt{get<T>()} method uses \texttt{std::any\_cast} to safely retrieve the contained message, throwing an exception if the type does not match.
+    \item \textbf{Copy and Move Semantics:} All standard copy and move operations are supported, making \texttt{AnyMessage} suitable for use in containers and generic APIs.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{template<typename T> AnyMessage(const Message<T>\& msg)}}
+Constructs an \texttt{AnyMessage} from a \texttt{Message<T>}, storing it in a type-erased form and recording its type information.
+
+\paragraph{\texttt{const std::type\_info\& type() const}}
+Returns the type information of the contained message. This can be compared to \texttt{typeid(Message<T>)} for safe type checks.
+
+\paragraph{\texttt{template<typename T> const Message<T>\& get() const}}
+Retrieves the contained message as a \texttt{Message<T>}. Throws \texttt{std::bad\_any\_cast} if the type does not match. Always check \texttt{type()} before calling \texttt{get<T>()} to avoid exceptions.
+
+\paragraph{\texttt{bool has\_value() const}}
+Returns true if a message is stored, false otherwise.
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/AnyMessage.hpp>
+#include <dds/Message.hpp>
+
+struct MyData { int value; };
+
+dds::Message<MyData> msg;
+msg.data.value = 42;
+
+dds::AnyMessage any_msg(msg);
+
+if (any_msg.type() == typeid(dds::Message<MyData>)) {
+    const auto& recovered = any_msg.get<MyData>();
+    std::cout << "Recovered value: " << recovered.data.value << std::endl;
+}
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Type Safety:} Always check \texttt{type()} before calling \texttt{get<T>()} to avoid exceptions from \texttt{std::any\_cast}.
+    \item \textbf{Exception Handling:} \texttt{get<T>()} throws \texttt{std::bad\_any\_cast} if the type does not match. Use try-catch blocks or type checks as needed.
+    \item \textbf{Performance:} Type-erasure introduces a small runtime overhead compared to direct template usage. Use only where flexibility is required.
+    \item \textbf{Copy and Move:} \texttt{AnyMessage} supports copy and move semantics, making it suitable for use in containers and generic APIs.
+    \item \textbf{Integration:} Use \texttt{AnyMessage} for logging, generic queues, or dynamic dispatch where message types are not known at compile time.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Type-Erasure and std::any}
+Type-erasure allows code to operate on objects without knowing their concrete type at compile time. \texttt{std::any} is a standard C++17 facility for type-erasure, storing any copyable type and retrieving it with \texttt{std::any\_cast}.
+
+\paragraph{Safe Casting and Runtime Type Information}
+\texttt{std::any\_cast} checks the stored type at runtime and throws an exception if the types do not match. Always use \texttt{type()} to check the type before casting.
+
+\paragraph{Integration with Generic APIs}
+\texttt{AnyMessage} enables the construction of generic APIs, such as message queues, loggers, or dispatchers, that can handle messages of arbitrary types at runtime.
+
+\section{AnyTopic (\texttt{AnyTopic.hpp})}
+
+\subsection{Purpose and Overview}
+The \texttt{AnyTopic} class provides a type-erased container for topics of arbitrary message types in the DDS system. It enables runtime polymorphism, allowing topics of different types to be stored, passed, and processed generically. This is particularly useful for topic registries, dynamic discovery, logging, and systems where the topic type is not known at compile time.
+
+\subsection{Class Declaration}
+\begin{lstlisting}[language=C++]
+class AnyTopic {
+public:
+    AnyTopic() = default;
+    AnyTopic(const AnyTopic&) = default;
+    AnyTopic(AnyTopic&&) = default;
+    AnyTopic& operator=(const AnyTopic&) = default;
+    AnyTopic& operator=(AnyTopic&&) = default;
+    ~AnyTopic() = default;
+
+    template<typename T>
+    AnyTopic(const Topic<T>& topic);
+
+    const std::string& name() const;
+    const std::type_info& type() const;
+    bool valid() const;
+private:
+    std::string name_;
+    const std::type_info* type_ = nullptr;
+};
+\end{lstlisting}
+
+\subsection{Design Rationale}
+\begin{itemize}
+    \item \textbf{Type-Erasure:} By storing only the topic name and type information, \texttt{AnyTopic} can represent any \texttt{Topic<T>} instance, decoupling code from specific message types.
+    \item \textbf{Runtime Type Information:} The \texttt{type()} method exposes the type of the contained topic, enabling safe runtime inspection and dispatch.
+    \item \textbf{Name Access:} The \texttt{name()} method provides access to the topic's name, supporting registries, logging, and discovery.
+    \item \textbf{Validity Check:} The \texttt{valid()} method indicates whether the topic is properly initialized.
+    \item \textbf{Copy and Move Semantics:} All standard copy and move operations are supported, making \texttt{AnyTopic} suitable for use in containers and generic APIs.
+\end{itemize}
+
+\subsection{Member Functions}
+\paragraph{\texttt{template<typename T> AnyTopic(const Topic<T>\& topic)}}
+Constructs an \texttt{AnyTopic} from a \texttt{Topic<T>}, storing its name and type information in a type-erased form.
+
+\paragraph{\texttt{const std::string\& name() const}}
+Returns the name of the contained topic. This is used for identification in registries, logging, and discovery.
+
+\paragraph{\texttt{const std::type\_info\& type() const}}
+Returns the type information of the contained topic. This can be compared to \texttt{typeid(T)} for safe type checks.
+
+\paragraph{\texttt{bool valid() const}}
+Returns true if the topic is properly initialized (i.e., has a non-empty name and valid type information).
+
+\subsection{Usage Example}
+\begin{lstlisting}[language=C++]
+#include <dds/AnyTopic.hpp>
+#include <dds/Topic.hpp>
+
+struct MyData { int value; };
+
+dds::Topic<MyData> topic("my_topic");
+dds::AnyTopic any_topic(topic);
+
+if (any_topic.valid() && any_topic.type() == typeid(MyData)) {
+    std::cout << "Topic name: " << any_topic.name() << std::endl;
+    std::cout << "Topic type: " << any_topic.type().name() << std::endl;
+}
+\end{lstlisting}
+
+\subsection{Edge Cases and Best Practices}
+\begin{itemize}
+    \item \textbf{Type Safety:} Always check \texttt{type()} before using the topic in a type-specific context to avoid logic errors.
+    \item \textbf{Validity:} Use \texttt{valid()} to ensure the topic is properly initialized before accessing its properties.
+    \item \textbf{Performance:} Type-erasure introduces minimal overhead, as only the name and type information are stored.
+    \item \textbf{Integration:} Use \texttt{AnyTopic} for registries, discovery services, or logging where topic types are not known at compile time.
+    \item \textbf{Type Indexing:} For advanced use cases, consider using \texttt{std::type\_index} to store and compare type information efficiently in registries.
+\end{itemize}
+
+\subsection{Advanced C++ Concepts}
+\paragraph{Type-Erasure and Runtime Type Information}
+Type-erasure allows code to operate on topics without knowing their concrete type at compile time. \texttt{AnyTopic} stores the topic's name and a pointer to its \texttt{std::type\_info}, enabling safe runtime inspection and dispatch.
+
+\paragraph{Type Indexing and Registries}
+For efficient lookup and management of topics in registries or discovery services, use \texttt{std::type\_index} (a wrapper around \texttt{std::type\_info}) as a key in associative containers.
+
+\paragraph{Integration with Generic APIs}
+\texttt{AnyTopic} enables the construction of generic APIs, such as topic registries, loggers, or discovery mechanisms, that can handle topics of arbitrary types at runtime.
+
+\chapter{Advanced C++ Techniques}
+
+\section{Templates and Type-Erasure}
+Templates and type-erasure are two powerful techniques in modern C++ for achieving type safety and runtime flexibility.
+
+\subsection{Templates}
+Templates enable compile-time polymorphism, allowing code to be written generically for any type while maintaining type safety and performance. In DDS, templates are used for publishers, subscribers, topics, and messages, ensuring that only compatible types interact.
+
+\begin{lstlisting}[language=C++]
+template<typename T>
+class Publisher { /* ... */ };
+\end{lstlisting}
+
+\textbf{Pros:}
+\begin{itemize}
+    \item Zero runtime overhead (all checks at compile time)
+    \item Type safety: errors are caught early
+    \item No need for dynamic casting
+\end{itemize}
+\textbf{Cons:}
+\begin{itemize}
+    \item Code bloat for many types (each instantiation generates new code)
+    \item Cannot store different types in the same container without type-erasure
+    \item API can become complex for users unfamiliar with templates
+\end{itemize}
+
+\subsection{Type-Erasure}
+Type-erasure enables runtime polymorphism by hiding the concrete type behind a uniform interface. In C++17, \texttt{std::any} is a standard facility for type-erasure. DDS uses type-erasure for \texttt{AnyMessage} and \texttt{AnyTopic} to allow generic storage and dispatch.
+
+\begin{lstlisting}[language=C++]
+std::any value = Message<MyData>{};
+if (value.type() == typeid(Message<MyData>)) {
+    auto& msg = std::any_cast<Message<MyData>&>(value);
+}
+\end{lstlisting}
+
+\textbf{Pros:}
+\begin{itemize}
+    \item Store and process heterogeneous types in generic containers
+    \item Enables dynamic dispatch and plugin architectures
+    \item Useful for logging, registries, and dynamic discovery
+\end{itemize}
+\textbf{Cons:}
+\begin{itemize}
+    \item Small runtime overhead (type checks, heap allocation)
+    \item Loss of compile-time type safety (errors at runtime)
+    \item Requires careful use of \texttt{any\_cast} and type checks
+\end{itemize}
+
+\subsection{Hybrid Patterns}
+Many real-world systems use a hybrid approach: templates for the fast path, type-erasure for generic APIs, logging, or dynamic dispatch. This combines the safety and performance of templates with the flexibility of type-erasure.
+
+\section{Smart Pointers and Ownership}
+Smart pointers manage resource ownership and lifetime, preventing memory leaks and dangling pointers. The main types are:
+
+\begin{itemize}
+    \item \texttt{std::unique\_ptr<T>}: Exclusive ownership, non-copyable, movable. Use for strict RAII.
+    \item \texttt{std::shared\_ptr<T>}: Shared ownership, reference-counted. Use when multiple entities need to share a resource.
+    \item \texttt{std::weak\_ptr<T>}: Non-owning reference to a \texttt{shared\_ptr}. Use to break cycles and avoid leaks.
+\end{itemize}
+
+\begin{lstlisting}[language=C++]
+auto ptr = std::make_shared<MyType>();
+std::weak_ptr<MyType> weak = ptr;
+if (auto locked = weak.lock()) {
+    // Safe to use *locked
+}
+\end{lstlisting}
+
+\textbf{Best Practices:}
+\begin{itemize}
+    \item Prefer \texttt{unique\_ptr} for exclusive ownership
+    \item Use \texttt{shared\_ptr} only when necessary (shared ownership is rare in well-designed systems)
+    \item Use \texttt{weak\_ptr} to break cycles (e.g., observer patterns)
+    \item Avoid raw pointers for ownership; use them only for non-owning references
+    \item Be aware of thread safety: \texttt{shared\_ptr} is thread-safe for reference counting, but not for the pointed-to object
+\end{itemize}
+
+\section{std::any, any\_cast, and Runtime Type Information}
+\texttt{std::any} is a C++17 type-erasure facility that can store any copyable type. \texttt{any\_cast} retrieves the stored value, throwing \texttt{std::bad\_any\_cast} if the type does not match.
+
+\begin{lstlisting}[language=C++]
+std::any value = 42;
+try {
+    int n = std::any_cast<int>(value);
+} catch (const std::bad_any_cast&) {
+    // Handle type mismatch
+}
+\end{lstlisting}
+
+\textbf{Runtime Type Information (RTTI):}
+\begin{itemize}
+    \item \texttt{typeid(T)} returns a \texttt{std::type\_info} object for type T
+    \item \texttt{typeid(expr)} returns the dynamic type of expr (if polymorphic)
+    \item \texttt{std::type\_index} is a wrapper for \texttt{type\_info} for use as a map key
+\end{itemize}
+
+\section{Thread Safety and Concurrency}
+Modern C++ provides a rich set of concurrency primitives:
+\begin{itemize}
+    \item \texttt{std::mutex}, \texttt{std::lock\_guard}, \texttt{std::unique\_lock}: Mutual exclusion
+    \item \texttt{std::atomic<T>}: Lock-free atomic operations
+    \item \texttt{std::thread}: Thread creation and management
+    \item \texttt{std::condition\_variable}: Thread synchronization
+    \item \texttt{std::future}, \texttt{std::promise}: Asynchronous result passing
+\end{itemize}
+
+\begin{lstlisting}[language=C++]
+#include <thread>
+#include <mutex>
+
+std::mutex mtx;
+int shared = 0;
+
+void increment() {
+    std::lock_guard<std::mutex> lock(mtx);
+    ++shared;
+}
+
+std::thread t1(increment), t2(increment);
+t1.join(); t2.join();
+\end{lstlisting}
+
+\textbf{Best Practices for DDS:}
+\begin{itemize}
+    \item Minimize lock contention by reducing critical sections
+    \item Prefer lock-free data structures for high-frequency message passing
+    \item Use thread pools for scalable concurrency
+    \item Always document thread safety guarantees in APIs
+    \item Use \texttt{std::atomic} for simple counters, flags, and reference counts
+\end{itemize}
+
+% Example diagram (to be drawn in TikZ or externally):
+% \begin{center}
+% \begin{tikzpicture}
+%   \node (A) [draw, rectangle] {Publisher<T>};
+%   \node (B) [draw, rectangle, right=2cm of A] {Transport};
+%   \node (C) [draw, rectangle, right=2cm of B] {Subscriber<T>};
+%   \draw[->] (A) -- (B) node[midway, above] {publish};
+%   \draw[->] (B) -- (C) node[midway, above] {callback};
+% \end{tikzpicture}
+% \end{center}
+
+\chapter{Usage Examples}
+% Add code listings and best practices
+
+\chapter{Development Roadmap}
+% Add completed and planned features
+
+\appendix
+\chapter{References and Further Reading}
+% Add references
+
+\end{document} 
