@@ -477,7 +477,7 @@ Creates a subscriber for the specified topic and message type, injecting the sha
 \subsection{Implementation Details and Advanced C++ Notes}
 \textbf{Protected Constructors and Smart Pointers:}
 
-In C++, if a class has a protected constructor (as is the case for \texttt{Publisher} and \texttt{Subscriber}), \texttt{std::make_shared} cannot be used to construct instances, because \texttt{make_shared} is not a friend and cannot access protected/private constructors. Instead, you must use direct \texttt{new}:
+In C++, if a class has a protected constructor (as is the case for \texttt{Publisher} and \texttt{Subscriber}), \texttt{std::make\_shared} cannot be used to construct instances, because \texttt{make\_shared} is not a friend and cannot access protected/private constructors. Instead, you must use direct \texttt{new}:
 \begin{lstlisting}[language=C++]
 // Correct way to construct with protected constructor:
 return std::shared_ptr<Publisher<T>>(new Publisher<T>(topic, transport_));
@@ -491,7 +491,7 @@ C++ requires that template method implementations be available in every translat
 
 \textbf{Summary:}
 \begin{itemize}
-    \item Use direct \texttt{new} with \texttt{std::shared_ptr} for protected constructors.
+    \item Use direct \texttt{new} with \texttt{std::shared\_ptr} for protected constructors.
     \item Keep all template method implementations in the header.
     \item This approach is standard and necessary for modern C++ template-based factory patterns.
 \end{itemize}
