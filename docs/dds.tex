@@ -1,10 +1,10 @@
 \documentclass[12pt]{report}
 \usepackage{listings}
 \usepackage[hidelinks]{hyperref}
-\usepackage{tikz}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{geometry}
+\usepackage{tikz}
 \geometry{margin=1in}
 \title{Mini DDS Library Documentation}
 \author{DDS Project}
@@ -26,9 +26,6 @@ Mini-DDS is an educational, modern C++ Data Distribution Service library designe
 - Extensibility
 - Type safety and runtime polymorphism
 - Testability and mockability
-
-\chapter{Class Diagram}
-% Example TikZ diagram or placeholder
 
 \chapter{API Reference}
 
@@ -993,17 +990,6 @@ t1.join(); t2.join();
     \item Use \texttt{std::atomic} for simple counters, flags, and reference counts
 \end{itemize}
 
-% Example diagram (to be drawn in TikZ or externally):
-% \begin{center}
-% \begin{tikzpicture}
-%   \node (A) [draw, rectangle] {Publisher<T>};
-%   \node (B) [draw, rectangle, right=2cm of A] {Transport};
-%   \node (C) [draw, rectangle, right=2cm of B] {Subscriber<T>};
-%   \draw[->] (A) -- (B) node[midway, above] {publish};
-%   \draw[->] (B) -- (C) node[midway, above] {callback};
-% \end{tikzpicture}
-% \end{center}
-
 \chapter{Usage Examples}
 
 \section{Basic Publish/Subscribe Example}
@@ -1083,6 +1069,125 @@ int main() {
 [Subscriber] Received value: 42
 [Subscriber] Topic: my_topic
 [Subscriber] Sequence: 1
+\end{lstlisting}
+
+\section{Asynchronous Subscriber Example}
+This example demonstrates how to implement an asynchronous subscriber using a thread-safe queue and a worker thread. The subscriber receives messages from the transport, pushes them into a queue, and processes them in a separate thread, simulating a real-world event-driven DDS subscriber.
+
+\subsection{Example Code: async\_subscriber.cpp}
+\begin{lstlisting}[language=C++]
+#include <dds/DomainParticipant.hpp>
+#include <dds/MockTransport.hpp>
+#include <dds/Publisher.hpp>
+#include <dds/Subscriber.hpp>
+#include <dds/Topic.hpp>
+#include <dds/Message.hpp>
+#include <dds/ThreadSafeQueue.hpp>
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include <atomic>
+
+struct MyData {
+    int value;
+};
+
+// Async subscriber wrapper using a thread-safe queue and worker thread
+class AsyncSubscriber {
+public:
+    AsyncSubscriber(const std::shared_ptr<dds::Subscriber<MyData>>\& sub)
+        : subscriber_(sub), stop_flag_(false) {
+        // Register a callback that pushes messages into the queue
+        subscriber_->set_callback([this](const dds::Message<MyData>\& msg) {
+            queue_.push(msg);
+        });
+        // Start the worker thread
+        worker_ = std::thread([this] { this->process(); });
+    }
+    ~AsyncSubscriber() {
+        stop_flag_ = true;
+        // Push a dummy message to unblock wait_and_pop
+        queue_.push(dds::Message<MyData>{});
+        if (worker_.joinable()) worker_.join();
+    }
+    // Worker thread: process messages from the queue
+    void process() {
+        while (!stop_flag_) {
+            dds::Message<MyData> msg = queue_.wait_and_pop();
+            if (stop_flag_) break;
+            std::cout << "[AsyncSubscriber] Received value: " << msg.data.value << std::endl;
+            std::cout << "[AsyncSubscriber] Topic: " << msg.topic << std::endl;
+            std::cout << "[AsyncSubscriber] Sequence: " << msg.sequence_number << std::endl;
+        }
+    }
+private:
+    std::shared_ptr<dds::Subscriber<MyData>> subscriber_;
+    dds::ThreadSafeQueue<dds::Message<MyData>> queue_;
+    std::thread worker_;
+    std::atomic<bool> stop_flag_;
+};
+
+int main() {
+    using namespace dds;
+
+    auto transport = std::make_shared<MockTransport>();
+    DomainParticipant participant(transport);
+    auto topic = std::make_shared<Topic<MyData>>("async_topic");
+    auto publisher = participant.create_publisher<MyData>(topic);
+    auto subscriber = participant.create_subscriber<MyData>(topic);
+
+    AsyncSubscriber async_sub(subscriber);
+
+    // Publisher sends multiple messages quickly
+    for (int i = 1; i <= 5; ++i) {
+        Message<MyData> msg;
+        msg.data.value = i * 10;
+        msg.topic = "async_topic";
+        msg.timestamp = std::chrono::system_clock::now();
+        msg.sequence_number = i;
+        std::cout << "[Publisher] Publishing value: " << msg.data.value << std::endl;
+        publisher->publish(msg);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    // Wait for all messages to be processed
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // AsyncSubscriber destructor will clean up the thread
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{Explanation}
+\begin{itemize}
+    \item \textbf{ThreadSafeQueue:} Provides a thread-safe FIFO queue for passing messages between the transport callback and the worker thread.
+    \item \textbf{AsyncSubscriber:} Wraps a regular subscriber, registers a callback to push messages into the queue, and starts a worker thread to process messages asynchronously.
+    \item \textbf{Worker Thread:} Continuously pops messages from the queue and processes them, simulating event-driven message handling.
+    \item \textbf{Publisher:} Sends multiple messages quickly; the subscriber processes them at its own pace.
+    \item \textbf{Difference from Basic Example:} In the basic example, the callback runs synchronously in the transport's context. Here, message processing is decoupled and runs in a separate thread.
+\end{itemize}
+
+\subsection{Expected Output}
+\begin{lstlisting}
+[Publisher] Publishing value: 10
+[Publisher] Publishing value: 20
+[Publisher] Publishing value: 30
+[Publisher] Publishing value: 40
+[Publisher] Publishing value: 50
+[AsyncSubscriber] Received value: 10
+[AsyncSubscriber] Topic: async_topic
+[AsyncSubscriber] Sequence: 1
+[AsyncSubscriber] Received value: 20
+[AsyncSubscriber] Topic: async_topic
+[AsyncSubscriber] Sequence: 2
+[AsyncSubscriber] Received value: 30
+[AsyncSubscriber] Topic: async_topic
+[AsyncSubscriber] Sequence: 3
+[AsyncSubscriber] Received value: 40
+[AsyncSubscriber] Topic: async_topic
+[AsyncSubscriber] Sequence: 4
+[AsyncSubscriber] Received value: 50
+[AsyncSubscriber] Topic: async_topic
+[AsyncSubscriber] Sequence: 5
 \end{lstlisting}
 
 \chapter{Development Roadmap}
