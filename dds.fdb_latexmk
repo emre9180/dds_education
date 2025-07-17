@@ -1,9 +1,0 @@
-# Fdb version 4
-["pdflatex"] 0 "docs/dds.tex" "dds.pdf" "dds" 0 -1
-  "dds.aux" 0 -1 0 "pdflatex"
-  "docs/dds.tex" 0 -1 0 ""
-  (generated)
-  "dds.aux"
-  "dds.log"
-  "dds.pdf"
-  (rewritten before read)
